@@ -8,12 +8,11 @@ import (
 	"io/ioutil"
 	"github.com/golang/glog"
 	"github.com/aws/aws-sdk-go/service/s3"
-	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/aws"
-	"time"
 	"bytes"
 	"io"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
 )
 
 const (
@@ -103,7 +102,7 @@ func GetRelatedProducts(dataDir string) RelatedProducts{
 
 func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) RelatedProducts{
 	results:=RelatedProducts{Relates:make(map[string]Product)}
-	bucket,keypattern:=parseS3Params(*dataDir)
+	bucket,keypattern:=parseS3Params(dataDir)
 	params := &s3.ListObjectsInput{
 		Bucket:       aws.String("ecomm-order-items"), // Required
 		//Delimiter:    aws.String("Delimiter"),
@@ -125,17 +124,20 @@ func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) RelatedProducts{
 	// Pretty-print the response data.
 	//fmt.Println(resp)
 	for _,obj:=range resp.Contents{
-		if strings.HasPrefix(*obj.Key,keypattern+"/part-"){
-			//fmt.Println(GetObject(svc,*obj.Key))
-			populateRelatedProducts(results,getObject(svc, bucket, *obj.Key))
+		glog.V(2).Infof("s3 object: %s. Keypattern:%s",*obj.Key,keypattern)
+		if strings.HasPrefix(*obj.Key,keypattern[1:]+"/part-"){
+			glog.V(2).Infof("populating with file %s",*obj.Key)
+			populateRelatedProducts(&results,getObject(svc, bucket, *obj.Key))
 		}
 	}
+	glog.V(2).Infof("35671072 is %s \n",results.Relates["35671072"])
 	return results
 
 }
 //populate relatedProducts by parsing out the strContent which should the content from part-00000[\d] files
-func populateRelatedProducts(relatedProducts RelatedProducts,strContent string){
+func populateRelatedProducts(relatedProducts *RelatedProducts,strContent string){
 	parts:=strings.Split(strContent,"\n")
+	glog.V(2).Infof("number of results: %d",len(parts))
 	for _,part:=range parts{
 		//get the json which starts from the first { and ends at the last )
 		start:=strings.Index(part,"{")
@@ -144,6 +146,7 @@ func populateRelatedProducts(relatedProducts RelatedProducts,strContent string){
 			continue
 		}
 		jsonStr:=part[start:end]
+
 		var rp Product
 		error:=json.Unmarshal([]byte(jsonStr),&rp)
 		if error!=nil{
@@ -197,13 +200,17 @@ func main(){
 	flag.Parse()
 	glog.V(2).Infof("data dir is %s \n",*dataDir)
 
-	if strings.HasPrefix(*dataDir,"s3://"){
-		//bucket,keypattern:=parseS3Params(*dataDir)
+	var relatedProducts RelatedProducts
 
+	if strings.HasPrefix(*dataDir,"s3://"){
+		svc := s3.New(session.New(),&aws.Config{Region: aws.String("us-east-1")})
+		relatedProducts=GetRelatedProductsFromS3(svc,*dataDir)
+	}else {
+		relatedProducts=GetRelatedProducts(*dataDir)
 	}
 
 	mux := http.NewServeMux()
-	relatedProducts:=GetRelatedProducts(*dataDir)
+
 	myHandler := &relatedProducts
 	mux.Handle("/recommendation/", myHandler)
 	glog.Infof("servic ready")
