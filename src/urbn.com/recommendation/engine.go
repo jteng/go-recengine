@@ -213,7 +213,7 @@ func main(){
 
 	myHandler := &relatedProducts
 	mux.Handle("/recommendation/", myHandler)
-	glog.Infof("servic ready on port 80")
-	glog.Fatal(http.ListenAndServe(":80", mux))
+	glog.Infof("servic ready on port 8080")
+	glog.Fatal(http.ListenAndServe(":8080", mux))
 
 }
