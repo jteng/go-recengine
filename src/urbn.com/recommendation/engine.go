@@ -7,6 +7,13 @@ import (
 	"encoding/json"
 	"io/ioutil"
 	"github.com/golang/glog"
+	"github.com/aws/aws-sdk-go/service/s3"
+	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/aws"
+	"time"
+	"bytes"
+	"io"
+	"github.com/aws/aws-sdk-go/aws/awserr"
 )
 
 const (
@@ -94,11 +101,107 @@ func GetRelatedProducts(dataDir string) RelatedProducts{
 	return results
 }
 
+func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) RelatedProducts{
+	results:=RelatedProducts{Relates:make(map[string]Product)}
+	bucket,keypattern:=parseS3Params(*dataDir)
+	params := &s3.ListObjectsInput{
+		Bucket:       aws.String("ecomm-order-items"), // Required
+		//Delimiter:    aws.String("Delimiter"),
+		//EncodingType: aws.String("EncodingType"),
+		//Marker:       aws.String("Marker"),
+		//MaxKeys:      aws.Int64(1),
+		//Prefix:       aws.String("Prefix"),
+	}
+	resp, err := svc.ListObjects(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+
+		glog.Errorf("%s, %s \n",err.(awserr.Error).Code(),err.(awserr.Error).Error())
+
+	}
+
+	// Pretty-print the response data.
+	//fmt.Println(resp)
+	for _,obj:=range resp.Contents{
+		if strings.HasPrefix(*obj.Key,keypattern+"/part-"){
+			//fmt.Println(GetObject(svc,*obj.Key))
+			populateRelatedProducts(results,getObject(svc, bucket, *obj.Key))
+		}
+	}
+	return results
+
+}
+//populate relatedProducts by parsing out the strContent which should the content from part-00000[\d] files
+func populateRelatedProducts(relatedProducts RelatedProducts,strContent string){
+	parts:=strings.Split(strContent,"\n")
+	for _,part:=range parts{
+		//get the json which starts from the first { and ends at the last )
+		start:=strings.Index(part,"{")
+		end:=strings.LastIndex(part,")")
+		if start<0 || end>=len(part){
+			continue
+		}
+		jsonStr:=part[start:end]
+		var rp Product
+		error:=json.Unmarshal([]byte(jsonStr),&rp)
+		if error!=nil{
+			glog.Errorf("failed to unmarshal json %s %s\n",jsonStr,error.Error())
+		}else{
+			relatedProducts.Relates[rp.ProductID]=rp
+		}
+	}
+}
+//get object from s3
+func getObject(svc *s3.S3,bucket string, key string)string{
+	params := &s3.GetObjectInput{
+		Bucket:                     aws.String(bucket), // Required
+		Key:                        aws.String(key),  // Required
+	}
+	resp, err := svc.GetObject(params)
+
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		glog.Fatal(err.Error())
+	}
+
+	size:=int(*resp.ContentLength)
+
+	buffer:=make([]byte,size)
+	defer resp.Body.Close()
+	var bbuffer bytes.Buffer
+	for true {
+		num,rerr:=resp.Body.Read(buffer)
+		if num>0{
+			bbuffer.Write(buffer[:num])
+		}else if rerr==io.EOF || rerr!=nil{
+			break
+		}
+	}
+	return bbuffer.String()
+}
+//parse s3://ecomm-order-items/recommendations/output.txt to return {ecomm-order-items,recommendations/output.txt}
+func parseS3Params(in string)(string,string){
+	if strings.HasPrefix(in,"s3://"){
+		params:=in[len("s3://"):]
+		parts:=strings.Split(params,"/")
+		return parts[0],params[len(parts[0]):]
+	}
+	return "",""
+}
 
 func main(){
 	dataDir:=flag.String("dataLocation","","")
 	flag.Parse()
 	glog.V(2).Infof("data dir is %s \n",*dataDir)
+
+	if strings.HasPrefix(*dataDir,"s3://"){
+		//bucket,keypattern:=parseS3Params(*dataDir)
+
+	}
+
 	mux := http.NewServeMux()
 	relatedProducts:=GetRelatedProducts(*dataDir)
 	myHandler := &relatedProducts
