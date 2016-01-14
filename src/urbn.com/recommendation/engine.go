@@ -49,6 +49,9 @@ func (relates *RelatedProducts) ServeHTTP(w http.ResponseWriter, r *http.Request
 
 	w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_VALUE_JSON)
 	json.NewEncoder(w).Encode(prod)
+	glog.V(3).Infof("served %s %+v",r.URL.Path,prod)
+	glog.V(2).Infof("served %s",r.URL.Path)
+
 }
 
 //get the productId from the url path, for instance /recommendation/prod123 will return prod123
@@ -130,7 +133,7 @@ func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) RelatedProducts{
 			populateRelatedProducts(&results,getObject(svc, bucket, *obj.Key))
 		}
 	}
-	glog.V(2).Infof("35671072 is %s \n",results.Relates["35671072"])
+
 	return results
 
 }
