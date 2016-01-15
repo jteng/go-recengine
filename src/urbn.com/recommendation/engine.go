@@ -13,6 +13,7 @@ import (
 	"io"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/dynamodb"
 )
 
 const (
@@ -24,6 +25,12 @@ type Product struct{
 	ProductID     string `json:"productId"`
 	SortedRelates []RelatedProduct `json:"sortedRelates"`
 }
+
+type ProductRecommendation struct{
+	ProductID     string `json:"productId"`
+	BoughtWith []RelatedProduct `json:"boughtWith"`
+}
+
 type RelatedProduct struct {
 	ProductID     string `json:"productId"`
 	Score         int    `json:"score"`
@@ -31,6 +38,29 @@ type RelatedProduct struct {
 
 type RelatedProducts struct{
 	Relates map[string]Product
+}
+type DynamoDbHandler struct{
+	svc *dynamodb.DynamoDB
+}
+
+func convertToRecommendation(prod Product) ProductRecommendation{
+	return ProductRecommendation{ProductID:prod.ProductID,BoughtWith:prod.SortedRelates}
+}
+
+func (dhandler *DynamoDbHandler) ServeHTTP(w http.ResponseWriter, r *http.Request){
+	productId:=GetProductId(r)
+	productStr:=GetItemFromDynamoDb(dhandler.svc,productId)
+	var rp Product
+	error:=json.Unmarshal([]byte(productStr),&rp)
+	if error!=nil{
+		glog.Errorf("failed to unmarshal json %s %s\n",productStr,error.Error())
+	}else{
+		recommendation:=convertToRecommendation(rp)
+		json.NewEncoder(w).Encode(recommendation)
+		glog.V(3).Infof("served %s %+v",r.URL.Path,recommendation)
+		glog.V(2).Infof("served %s",r.URL.Path)
+	}
+
 }
 
 func (relates *RelatedProducts) ServeHTTP(w http.ResponseWriter, r *http.Request){
@@ -46,10 +76,11 @@ func (relates *RelatedProducts) ServeHTTP(w http.ResponseWriter, r *http.Request
 			SortedRelates:[]RelatedProduct{},
 		}
 	}
+	recommendation:=convertToRecommendation(prod)
 
 	w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_VALUE_JSON)
-	json.NewEncoder(w).Encode(prod)
-	glog.V(3).Infof("served %s %+v",r.URL.Path,prod)
+	json.NewEncoder(w).Encode(recommendation)
+	glog.V(3).Infof("served %s %+v",r.URL.Path,recommendation)
 	glog.V(2).Infof("served %s",r.URL.Path)
 
 }
@@ -198,25 +229,79 @@ func parseS3Params(in string)(string,string){
 	return "",""
 }
 
-func main(){
-	dataDir:=flag.String("dataLocation","","")
-	flag.Parse()
-	glog.V(2).Infof("data dir is %s \n",*dataDir)
+func GetItemFromDynamoDb(svc *dynamodb.DynamoDB,productId string)string{
+	params := &dynamodb.GetItemInput{
+		Key: map[string]*dynamodb.AttributeValue{ // Required
+			"productId": { // Required
+				S:    aws.String(productId),
+			},
+			// More values...
+		},
+		TableName: aws.String("ProductRecommendation"), // Required
+		AttributesToGet: []*string{
+			aws.String("boughtWith"), // Required
+			// More values...
+		},
+		ConsistentRead: aws.Bool(true),
+		/*
+		ExpressionAttributeNames: map[string]*string{
+			"Key": aws.String("AttributeName"), // Required
+			// More values...
+		},
+		ProjectionExpression:   aws.String("ProjectionExpression"),
+		ReturnConsumedCapacity: aws.String("ReturnConsumedCapacity"),
+		*/
+	}
+	resp, err:= svc.GetItem(params)
 
-	var relatedProducts RelatedProducts
-
-	if strings.HasPrefix(*dataDir,"s3://"){
-		svc := s3.New(session.New(),&aws.Config{Region: aws.String("us-east-1")})
-		relatedProducts=GetRelatedProductsFromS3(svc,*dataDir)
-	}else {
-		relatedProducts=GetRelatedProducts(*dataDir)
+	if err != nil {
+		// Print the error, cast err to awserr.Error to get the Code and
+		// Message from an error.
+		glog.Errorln(err.Error())
+		return "failed to query DynamoDb"
 	}
 
-	mux := http.NewServeMux()
+	// Pretty-print the response data.
+	return *resp.Item["boughtWith"].S
+}
 
+func main(){
+	dataDir:=flag.String("dataLocation","","")
+	useDynamoDb:=flag.Bool("useDynamoDb",false,"dynamodb indicator")
+	flag.Parse()
+	glog.V(2).Infof("data dir is %s \n",*dataDir)
+	if !*useDynamoDb{
+		serveFromS3(*dataDir)
+	}else{
+		serveFromDynamoDb()
+	}
+}
+
+func serveFromDynamoDb(){
+	svc := dynamodb.New(session.New(),&aws.Config{Region: aws.String("us-east-1")})
+	handler:=&DynamoDbHandler{svc:svc}
+	mux := http.NewServeMux()
+	mux.Handle("/recommendation/", handler)
+	glog.Infof("data source is pointing to dynamo db. servic ready on port 8080")
+	glog.Fatal(http.ListenAndServe(":8080", mux))
+}
+
+
+
+func serveFromS3(s3Location string){
+	var relatedProducts RelatedProducts
+
+	if strings.HasPrefix(s3Location,"s3://"){
+		svc := s3.New(session.New(),&aws.Config{Region: aws.String("us-east-1")})
+		relatedProducts=GetRelatedProductsFromS3(svc,s3Location)
+	}else {
+		relatedProducts=GetRelatedProducts(s3Location)
+	}
+
+
+	mux := http.NewServeMux()
 	myHandler := &relatedProducts
 	mux.Handle("/recommendation/", myHandler)
 	glog.Infof("servic ready on port 8080")
 	glog.Fatal(http.ListenAndServe(":8080", mux))
-
 }
