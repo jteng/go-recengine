@@ -28,7 +28,7 @@ type Product struct{
 
 type ProductRecommendation struct{
 	ProductID     string `json:"productId"`
-	BoughtWith []RelatedProduct `json:"boughtWith"`
+	BoughtWith []RelatedProduct `json:"boughtTogether"`
 }
 
 type RelatedProduct struct {
@@ -239,7 +239,7 @@ func GetItemFromDynamoDb(svc *dynamodb.DynamoDB,productId string)string{
 		},
 		TableName: aws.String("ProductRecommendation"), // Required
 		AttributesToGet: []*string{
-			aws.String("boughtWith"), // Required
+			aws.String("boughtTogether"), // Required
 			// More values...
 		},
 		ConsistentRead: aws.Bool(true),
@@ -262,7 +262,7 @@ func GetItemFromDynamoDb(svc *dynamodb.DynamoDB,productId string)string{
 	}
 
 	// Pretty-print the response data.
-	return *resp.Item["boughtWith"].S
+	return *resp.Item["boughtTogether"].S
 }
 
 func main(){
