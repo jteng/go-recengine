@@ -14,7 +14,10 @@ import (
 	"io/ioutil"
 	"math"
 	"net/http"
+	"sort"
+	"strconv"
 	"strings"
+"text/scanner"
 )
 
 const (
@@ -22,20 +25,74 @@ const (
 	HTTP_HEADER_VALUE_JSON   = "application/json; charset=UTF-8"
 )
 
+type SearchParam struct {
+	ProductId string
+	Location  string
+	Limit     int
+}
 type Product struct {
-	ProductID           string               `json:"productId"`
-	BoughtTogetherItems []BoughtTogetherItem `json:"boughtTogetherItems"`
+	ProductID           string              `json:"productId"`
+	BoughtTogetherItems BoughtTogetherItems `json:"boughtTogetherItems"`
 }
 
 type BoughtTogetherItem struct {
-	ProductID     string        `json:"productId"`
-	TotalScore    int           `json:"totalScore"`
-	ScoreByRegion []RegionScore `json:"scoreByRegion"`
+	ProductID     string       `json:"productId"`
+	TotalScore    int          `json:"totalScore"`
+	ScoreByRegion RegionScores `json:"scoreByRegion"`
 }
+
+type BoughtTogetherItems []BoughtTogetherItem
 
 type RegionScore struct {
 	Region string `json:"region"`
 	Score  int    `json:"score"`
+}
+
+type RegionScores []RegionScore
+
+//define the sortable item GeoItem and its sort implementation
+type SortableItem struct {
+	//Target string
+	ItemId string
+	Score  int
+	//Item   BoughtTogetherItem
+}
+type SortableItems []SortableItem
+
+func (slice SortableItems) Len() int {
+	return len(slice)
+}
+func (slice SortableItems) Less(i, j int) bool {
+	//find the RegionScore for the target region first
+	iItem := slice[i]
+	jItem := slice[j]
+	return iItem.Score > jItem.Score
+}
+func (slice SortableItems) Swap(i, j int) {
+	slice[i], slice[j] = slice[j], slice[i]
+}
+
+func convertToSortableItems(items BoughtTogetherItems, searchParam SearchParam) SortableItems {
+	var result SortableItems
+	for _, item := range items {
+		if item.ProductID == searchParam.ProductId {
+			continue
+		}
+		if searchParam.Location != "" {
+			for _, score := range item.ScoreByRegion {
+				if score.Region == strings.ToUpper(searchParam.Location) {
+					geoItem := SortableItem{ItemId: item.ProductID, Score: score.Score}
+					result = append(result, geoItem)
+					break
+				}
+			}
+		}else{
+			geoItem := SortableItem{ItemId: item.ProductID, Score: item.TotalScore}
+			result = append(result, geoItem)
+		}
+
+	}
+	return result
 }
 
 type RelatedProducts struct {
@@ -46,8 +103,8 @@ type DynamoDbHandler struct {
 }
 
 func (dhandler *DynamoDbHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	productId := GetProductId(r)
-	productStr := GetItemFromDynamoDb(dhandler.svc, productId)
+	param := GetSearchParams(r, "")
+	productStr := GetItemFromDynamoDb(dhandler.svc, param.ProductId)
 	var rp Product
 	error := json.Unmarshal([]byte(productStr), &rp)
 	if error != nil {
@@ -61,48 +118,52 @@ func (dhandler *DynamoDbHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 
 }
 
-func (relates *RelatedProducts) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	glog.V(2).Infof("serving %s", r.URL.Path)
-	productId := GetProductId(r)
-	var prod Product
-	if val, ok := relates.Relates[productId]; ok {
-		prod = val
-	} else {
-		//var recom [] RelatedProduct=[2]RelatedProduct{RelatedProduct{ProductID:"abcd",Score:25},RelatedProduct{ProductID:"xdgg",Score:2}}
-		prod = Product{
-			ProductID: productId,
-			//SortedRelates:[]RelatedProduct{},
-			BoughtTogetherItems: []BoughtTogetherItem{},
-		}
-	}
-	//recommendation:=convertToRecommendation(prod)
-
-	w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_VALUE_JSON)
-	prod = filterResult(prod)
-	json.NewEncoder(w).Encode(prod)
-	glog.V(3).Infof("served %s %+v", r.URL.Path, prod)
-	glog.V(2).Infof("served %s", r.URL.Path)
-
-}
-
-func filterResult(prod Product) Product {
+func filterResult(prod Product, limit int) Product {
 	if len(prod.BoughtTogetherItems) > 0 {
-		min := math.Min(10, (float64(len(prod.BoughtTogetherItems))))
+		min := math.Min(float64(limit), (float64(len(prod.BoughtTogetherItems))))
 		filtered := prod.BoughtTogetherItems[0:int(min)]
 		prod.BoughtTogetherItems = filtered
 	}
 	return prod
 }
 
-//get the productId from the url path, for instance /recommendation/prod123 will return prod123
-func GetProductId(r *http.Request) string {
-	p := strings.Split(r.URL.Path, "/")
-	length := len(p)
-	if length >= 1 {
-		return p[length-1]
-	} else {
-		return ""
+func filterRecommendation(items SortableItems, limit int) SortableItems {
+	if len(items) > 0 {
+		min := math.Min(float64(limit), (float64(len(items))))
+		return items[0:int(min)]
+
 	}
+	return items
+}
+
+//get the productId from the url path, for instance /recommendation/prod123 will return prod123
+// /recommendation/prod123/us_mid-west will return prod123,us_mid-west
+func GetSearchParams(r *http.Request, pathBound string) SearchParam {
+	result := SearchParam{Limit: 10}
+	if strings.HasPrefix(r.URL.Path, pathBound) {
+		//params := r.URL.Path[len(pathBound):]
+		limitStr := r.URL.Query().Get("limit")
+		if limitStr != "" {
+			limit, error := strconv.ParseInt(limitStr, 10, 64)
+			if error == nil {
+				result.Limit = int(limit)
+			}
+		}
+
+		location := r.URL.Query().Get("location")
+		if location != "" {
+			result.Location = strings.ToUpper(location)
+		}
+
+		pathParams:=getUrlPathValues(r.URL.Path);
+
+		result.ProductId=pathParams[strings.ToLower("productId")]
+		glog.V(3).Infof("search params %v ", result)
+
+	}
+
+	glog.V(3).Infof("search param for path %v is %v \n", r.URL.Path, result)
+	return result
 }
 
 //get the RelatedProducts from the data directory. the data file name following the pattern of "part([\d]+)"
@@ -278,6 +339,68 @@ func GetItemFromDynamoDb(svc *dynamodb.DynamoDB, productId string) string {
 	return *resp.Item["boughtTogether"].S
 }
 
+type RawHandler struct {
+	pathBound string
+	data      *RelatedProducts
+}
+
+func (relates *RawHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	glog.V(2).Infof("serving %s", r.URL.Path)
+	param := GetSearchParams(r, relates.pathBound)
+	var prod Product
+	relatesProducts := *relates.data
+	if val, ok := relatesProducts.Relates[param.ProductId]; ok {
+		prod = val
+	} else {
+		prod = Product{
+			ProductID: param.ProductId,
+			//SortedRelates:[]RelatedProduct{},
+			BoughtTogetherItems: []BoughtTogetherItem{},
+		}
+	}
+
+	w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_VALUE_JSON)
+	prod = filterResult(prod, param.Limit)
+	//items:=filterRecommendation(prod)
+	json.NewEncoder(w).Encode(prod)
+	glog.V(4).Infof("served %s %+v", r.URL.Path, prod)
+	glog.V(2).Infof("served %s", r.URL.Path)
+
+}
+
+type GeoHandler struct {
+	pathBound string
+	data      *RelatedProducts
+}
+
+func (relates *GeoHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	glog.V(2).Infof("serving %s", r.URL.Path)
+	param := GetSearchParams(r, relates.pathBound)
+	var prod Product
+	relatesProducts := *relates.data
+	if val, ok := relatesProducts.Relates[param.ProductId]; ok {
+		prod = val
+	} else {
+		prod = Product{
+			ProductID: param.ProductId,
+			//SortedRelates:[]RelatedProduct{},
+			BoughtTogetherItems: []BoughtTogetherItem{},
+		}
+	}
+
+	recommendation := convertToSortableItems(prod.BoughtTogetherItems, param)
+
+	sort.Sort(recommendation)
+
+	w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_VALUE_JSON)
+	//prod = filterResult(prod,param.Limit)
+	items := filterRecommendation(recommendation, param.Limit)
+	json.NewEncoder(w).Encode(items)
+	glog.V(4).Infof("served %s %+v", r.URL.Path, items)
+	glog.V(2).Infof("served %s", r.URL.Path)
+
+}
+
 func main() {
 	dataDir := flag.String("dataLocation", "", "")
 	useDynamoDb := flag.Bool("useDynamoDb", false, "dynamodb indicator")
@@ -309,9 +432,46 @@ func serveFromS3(s3Location string) {
 		relatedProducts = GetRelatedProducts(s3Location)
 	}
 
+	geoHandler := GeoHandler{data: &relatedProducts, pathBound: "/recommendation/"}
+	rawHandler := RawHandler{data: &relatedProducts, pathBound: "/recommendation/raw/"}
 	mux := http.NewServeMux()
-	myHandler := &relatedProducts
-	mux.Handle("/recommendation/", myHandler)
+
+	mux.Handle("/recommendation/raw/", &rawHandler)
+	mux.Handle("/recommendation/", &geoHandler)
 	glog.Infof("servic ready on port 8080")
 	glog.Fatal(http.ListenAndServe(":8080", mux))
+}
+
+func nextUrlPathValue(s scanner.Scanner) string{
+	var result string
+	for s.Scan()!=scanner.EOF{
+		v:=s.TokenText()
+		if v!="/"{
+			result=v
+			break
+		}
+	}
+	return result
+}
+
+func getUrlPathValues(path string) map[string]string{
+	glog.V(4).Infof("path is %s \n",path)
+	var result map[string]string = make(map[string]string)
+	var s scanner.Scanner
+	s.Init(strings.NewReader(path))
+	var tok rune
+	for tok!=scanner.EOF{
+		tok=s.Scan()
+		v:=s.TokenText()
+		if v!="/"{
+			fieldName:=v
+
+			value:=nextUrlPathValue(s)
+			result[strings.ToLower(fieldName)]=value
+		}
+	}
+	for k,v:=range result{
+		glog.V(4).Infof("key:[%s]||value:[%s]\n",k,v)
+	}
+	return result
 }
