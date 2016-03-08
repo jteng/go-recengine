@@ -24,12 +24,13 @@ func main(){
 	fileName := flag.String("file", "", "file to be parsed")
 	coloredItems:=flag.Bool("coloredItem",false,"colored item indicator")
 	geodItems:=flag.Bool("geoedItem",false,"geo awared item indicator")
+	output:=flag.String("output","","output file name")
 	flag.Parse()
 	if *coloredItems {
 		processColoredItems(*fileName)
 		return
 	}else if *geodItems {
-		processGeoAwareItems(*fileName)
+		processGeoAwareItems(*fileName,*output)
 		return
 	}else{
 		processPlainProducts(*fileName)
@@ -160,7 +161,7 @@ func processColoredItems(fileName string){
 
 }
 
-func processGeoAwareItems(fileName string){
+func processGeoAwareItems(fileName string, output string){
 	fmt.Println("processing geo awared items.")
 	orderItems := make(map[string]OrderItems)
 	contents, _ := ioutil.ReadFile(fileName)
@@ -187,8 +188,15 @@ func processGeoAwareItems(fileName string){
 
 
 	}
+	var outputFile string
+	if output!=""{
+		outputFile="/Users/tengj6/Downloads/"+output;
+	}else{
+		outputFile="/Users/tengj6/Downloads/flatOrderGeoAwaredItems.txt";
+	}
 
-	fo, err := os.Create("/Users/tengj6/Downloads/flatOrderGeoAwaredItems.txt")
+
+	fo, err := os.Create(outputFile)
 	if err != nil {
 		panic(err)
 	}

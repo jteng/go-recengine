@@ -1,0 +1,42 @@
+<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01 Transitional//EN"
+        "http://www.w3.org/TR/html4/loose.dtd">
+<html>
+<head>
+    <title>Recommendations</title>
+</head>
+<body>
+<div id="main" style="width: 800px">
+
+    <div id="prod-cat" align="center"><p>Category:{{.ParentCat}}</p></div>
+<div id="prod-img" style="width: 350px;" ><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}"><img src="{{.ImageUrl}}" alt=""></a></div>
+    <div id="prod-desc" style="float: left;width: 350px">Product {{.ProductID}}</div>
+
+<div id="bt" style="margin-top: 10px;" align="left"><p style="font-size: larger;font-weight: bold">Bought Together:</p>
+<table width="800">
+    <tr>
+        {{range .BoughtTogetherItems}}
+        <td style="font-size: smaller;width: auto"><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}">
+            <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}">
+            </a>
+            <br>{{.ProductName}}
+        </td>
+        {{end}}
+    </tr>
+</table>
+</div>
+<div id="av" style="margin-top: 10px"><p style="font-size: larger;font-weight: bold">Also Viewed:</p>
+<table width="800">
+    <tr>
+        {{range .AlsoViewedItems}}
+        <td style="font-size: smaller;width: auto"><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}">
+            <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}">
+        </a>
+            <br>{{.ProductName}}
+        </td>
+        {{end}}
+    </tr>
+</table>
+</div>
+</div>
+</body>
+</html>
