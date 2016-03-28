@@ -1,9 +1,9 @@
 package framework
 
 import (
+	"fmt"
 	"os"
 	"strconv"
-	"fmt"
 )
 
 var (
@@ -72,7 +72,7 @@ func (w Worker) Stop() {
 }
 
 type Payload struct {
-	Message    *os.FileInfo
+	Message *os.FileInfo
 }
 
 type InventoryMessage struct {
@@ -83,7 +83,7 @@ type InventoryMessage struct {
 
 func (payload *Payload) handlePayload() error {
 	//fmt.Printf("handle message %i \n", &payload.Message.SkuStocklevel)
-	fmt.Printf("handle payload %s",(*payload.Message).Name())
+	fmt.Printf("handle payload %s", (*payload.Message).Name())
 	return nil
 	//return payload.Collection.Insert(&payload.Message)
 }

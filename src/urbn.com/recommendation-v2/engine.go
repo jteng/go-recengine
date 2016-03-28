@@ -22,100 +22,13 @@ import (
 	"text/scanner"
 	"urbn.com/catalog"
 	"urbn.com/customer"
+	"urbn.com/recommendation"
 )
 
 const (
 	HTTP_HEADER_CONTENT_TYPE = "Content-Type"
 	HTTP_HEADER_VALUE_JSON   = "application/json; charset=UTF-8"
 )
-
-type SearchParam struct {
-	ProductId   string
-	Location    string
-	Limit       int
-	Sort        string
-	Customer    string
-	PrettyPrint bool
-}
-type Product struct {
-	ProductID           string              `json:"productId"`
-	ParentCat string
-	ImageUrl string
-	BoughtTogetherItems BoughtTogetherItems `json:"boughtTogetherItems"`
-	AlsoViewedItems     AlsoViewedItems     `json:"alsoViewedItems"`
-}
-
-func (p Product) RemoveSelf() {
-	var pos int
-	for i, v := range p.AlsoViewedItems {
-		if v.ProductID == p.ProductID {
-			pos = i
-			break
-		}
-	}
-	p.AlsoViewedItems = append(p.AlsoViewedItems[:pos], p.AlsoViewedItems[pos+1:]...)
-}
-
-type AlsoViewedItem struct {
-	ProductID     string       `json:"productId"`
-	ProductName   string       `json:"productName"`
-	ImageUrl      string       `json:"imageUrl"`
-	TotalScore    int          `json:"totalScore"`
-	ScoreByRegion RegionScores `json:"scoreByRegion"`
-}
-type AlsoViewedItems []*AlsoViewedItem
-
-func (p AlsoViewedItems) TopN(n int64) []*AlsoViewedItem {
-	sort.Sort(p)
-	t := math.Min(float64(n), float64(len(p)))
-	return p[:(int64(t))]
-
-}
-func (p AlsoViewedItems) Len() int {
-	return len(p)
-}
-func (p AlsoViewedItems) Swap(i, j int) {
-	p[i], p[j] = p[j], p[i]
-}
-func (p AlsoViewedItems) Less(i, j int) bool {
-	si := p[i].TotalScore
-	sj := p[j].TotalScore
-	return si > sj
-}
-
-type BoughtTogetherItem struct {
-	ProductID     string       `json:"productId"`
-	ProductName   string       `json:"productName"`
-	ImageUrl      string       `json:"imageUrl"`
-	TotalScore    int          `json:"totalScore"`
-	ScoreByRegion RegionScores `json:"scoreByRegion"`
-}
-
-type BoughtTogetherItems []*BoughtTogetherItem
-
-func (p BoughtTogetherItems) TopN(n int64) []*BoughtTogetherItem {
-	sort.Sort(p)
-	t := math.Min(float64(n), float64(len(p)))
-	return p[:(int64(t))]
-}
-func (p BoughtTogetherItems) Len() int {
-	return len(p)
-}
-func (p BoughtTogetherItems) Swap(i, j int) {
-	p[i], p[j] = p[j], p[i]
-}
-func (p BoughtTogetherItems) Less(i, j int) bool {
-	si := p[i].TotalScore
-	sj := p[j].TotalScore
-	return si > sj
-}
-
-type RegionScore struct {
-	Region string `json:"region"`
-	Score  int    `json:"score"`
-}
-
-type RegionScores []RegionScore
 
 //define the sortable item GeoItem and its sort implementation
 type SortableItem struct {
@@ -139,15 +52,15 @@ func (slice SortableItems) Swap(i, j int) {
 	slice[i], slice[j] = slice[j], slice[i]
 }
 
-func convertToSortableItems(items BoughtTogetherItems, searchParam SearchParam) SortableItems {
+func convertToSortableItems(items recommendation.Items, searchParam recommendation.SearchParam) SortableItems {
 	var result SortableItems
 	for _, item := range items {
 		if item.ProductID == searchParam.ProductId {
 			continue
 		}
 		if searchParam.Location != "" {
-			for _, score := range item.ScoreByRegion {
-				if score.Region == strings.ToUpper(searchParam.Location) {
+			for _, score := range item.ScoresByRegion {
+				if *score.Region == strings.ToUpper(searchParam.Location) {
 					geoItem := SortableItem{ItemId: item.ProductID, Score: score.Score}
 					result = append(result, geoItem)
 					break
@@ -162,91 +75,156 @@ func convertToSortableItems(items BoughtTogetherItems, searchParam SearchParam) 
 	return result
 }
 
-type RelatedProducts struct {
-	Relates map[string]Product
-}
 type TemplateDynHandler struct {
 	svc *dynamodb.DynamoDB
-	Tpl   *template.Template
+	Tpl *template.Template
 }
 
 func (t TemplateDynHandler) ParseTemplate() {
-	t.Tpl,_=template.ParseFiles("rectemplate.html")
+	t.Tpl, _ = template.ParseFiles("rectemplate.html")
 
 }
 func (dhandler *TemplateDynHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	param := GetSearchParams(r, "")
-	productStr := GetItemFromDynamoDb(dhandler.svc, param.ProductId)
-	glog.V(5).Infof("retrieved from dynamodb: %s\n", productStr)
-	var rp Product
-	error := json.Unmarshal([]byte(productStr), &rp)
-	if error != nil {
-		glog.Errorf("failed to unmarshal json %s %s\n", productStr, error.Error())
+
+	rp, err := GetProdRec(dhandler.svc, param.ProductId)
+
+	if err != nil {
+		glog.Errorf("failed to get product recommendation [%s] %v\n", param.ProductId, err)
 	} else {
-		rp.RemoveSelf()
-		var customer *customer.Customer
-		if param.Customer != "" {
-			customer = GetCustomerFromDynamoDb(dhandler.svc, param.Customer)
-		}
+		MakeRecommendation(rp, dhandler.svc, &param)
+		t, _ := template.ParseFiles("rectemplate.html")
 
-		rp.BoughtTogetherItems = rp.BoughtTogetherItems.TopN(int64(param.Limit))
-		rp.AlsoViewedItems = rp.AlsoViewedItems.TopN(int64(param.Limit))
-		prodIds := make(map[string]bool)
-		for _, v := range rp.AlsoViewedItems {
-			prodIds[v.ProductID] = true
-			//prodIds = append(prodIds, v.ProductID)
-		}
-		for _, v := range rp.BoughtTogetherItems {
-			prodIds[v.ProductID] = true
-		}
-
-		prods := BatchGetProducts(dhandler.svc, prodIds)
-		for _, v := range rp.AlsoViewedItems {
-			p, ok := prods[v.ProductID]
-			if ok {
-				glog.V(5).Infof("found [%s]=[%s] \n", p.ProductId, p.ImageUrl)
-				v.ProductName = p.ProductName
-				if customer!=nil{
-					v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
-				}else{
-					v.ImageUrl=p.ImageUrl
-				}
-			}
-		}
-		for _, v := range rp.BoughtTogetherItems {
-			p, ok := prods[v.ProductID]
-			if ok {
-				glog.V(5).Infof("found [%s]=[%s] \n", p.ProductId, p.ImageUrl)
-				v.ProductName = p.ProductName
-				if customer!=nil{
-					v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
-				}else{
-					v.ImageUrl=p.ImageUrl
-				}
-			}
-		}
-
-		p,ok:=prods[rp.ProductID]
-		if ok{
-			rp.ImageUrl=*p.GetPreferredColor(customer.ColorPrefs)
-			rp.ParentCat=p.ParentCat
-		}
-		t,_:=template.ParseFiles("rectemplate.html")
-		/*
-		t := template.New("fieldname example")
-		t, _ = t.Parse(`Product {{.ProductID}}<br><table><tr>
-			{{range .BoughtTogetherItems}}
-                	<td> {{.ProductID}}<br>{{.ProductName}}<br>{{.ImageUrl}} </td><td> </td>
-            		{{end}}
-            		</tr></table>`)
-            		*/
-		//data:=Product{ProductID:"12345",}
 		t.Execute(w, rp)
-		//dhandler.Tpl.Execute(w,rp)
-		//
-		glog.V(5).Infof("served %s %+v", r.URL.Path, rp)
+
+		glog.V(5).Infof("served %s boughtTogether[%d]/alsoViewed[%d]\n", r.URL.Path, len(rp.BoughtTogetherItems), len(rp.AlsoViewedItems))
 		glog.V(2).Infof("served %s", r.URL.Path)
 	}
+
+}
+
+func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, param *recommendation.SearchParam) {
+	rp.RemoveSelf()
+	var customer *customer.Customer
+	if param.Customer != "" {
+		customer = GetCustomerFromDynamoDb(svc, param.Customer)
+	}
+
+	rp.BoughtTogetherItems = rp.BoughtTogetherItems.TopN(param.Limit * 2)
+	rp.AlsoViewedItems = rp.AlsoViewedItems.TopN(param.Limit * 2)
+
+	prodIds := make(map[string]bool)
+	prodIds[rp.ProductID] = true
+	for _, v := range rp.AlsoViewedItems {
+		prodIds[v.ProductID] = true
+	}
+	for _, v := range rp.BoughtTogetherItems {
+		prodIds[v.ProductID] = true
+	}
+
+	prods := BatchGetProducts(svc, prodIds)
+	p, ok := prods[rp.ProductID]
+	if ok {
+
+		if customer != nil {
+			rp.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
+		} else {
+			rp.ImageUrl = p.ImageUrl
+		}
+		rp.ParentCat = p.ParentCat
+		rp.SalesByRegion = p.SalesByRegion
+		rp.NumOfPurchase = p.NumOfPurchase
+		glog.V(2).Infof("found current prod %s %d \n", rp.ProductID, p.NumOfPurchase)
+		sIds := make(map[string]bool)
+		for _, v := range p.SimilarItems {
+			sIds[*v] = true
+		}
+		simprods := BatchGetProducts(svc, sIds)
+		for _, sp := range simprods {
+			if sp.Availability {
+				si := recommendation.Item{Type: recommendation.REC_ITEM_TYPE_SIMILAR}
+				si.ProductID = sp.ProductId
+				si.ImageUrl = sp.ImageUrl
+				si.TotalScore = sp.NumOfPurchase
+				si.ProductName = sp.ProductName
+				si.ParentCat = sp.ParentCat
+				si.ScoresByRegion = sp.SalesByRegion
+				si.Availability = sp.Availability
+				rp.SimilarItems = append(rp.SimilarItems, &si)
+			}
+		}
+	}
+
+	avm := make(map[string]*recommendation.Item)
+	for _, v := range rp.AlsoViewedItems {
+		avm[v.ProductID] = v
+		p, ok := prods[v.ProductID]
+		if ok {
+			glog.V(5).Infof("found [%s]=[%s] \n", p.ProductId, p.ImageUrl)
+			v.ProductName = p.ProductName
+			v.ParentCat = p.ParentCat
+			v.Availability = p.Availability
+			glog.V(3).Infof("set item[%s].ParentCat[%s]  \n", v.ProductID, v.ParentCat)
+			if customer != nil {
+				v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
+			} else {
+				v.ImageUrl = p.ImageUrl
+			}
+		}
+	}
+	btm := make(map[string]*recommendation.Item)
+	for _, v := range rp.BoughtTogetherItems {
+		btm[v.ProductID] = v
+		p, ok := prods[v.ProductID]
+		if ok {
+			glog.V(5).Infof("found [%s]=[%s] \n", p.ProductId, p.ImageUrl)
+			v.ProductName = p.ProductName
+			v.ParentCat = p.ParentCat
+			v.Availability = p.Availability
+			if customer != nil {
+				v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
+			} else {
+				v.ImageUrl = p.ImageUrl
+			}
+		}
+
+	}
+
+	bsm := make(map[string]*recommendation.Item)
+	for pid, v := range avm {
+		//item:=recommendation.Item(*v)
+		_, ok := btm[pid]
+		glog.V(3).Infof("parent cat for %s is %s. item[%s].parentCat=[%s]\n", rp.ProductID, rp.ParentCat, v.ProductID, v.ParentCat)
+		if ok {
+			v.Type = recommendation.REC_ITEM_TYPE_PICKED
+			v.TotalScore = v.TotalScore * 2
+			//item:=recommendation.Item(*v)
+			bsm[v.ProductID] = v
+		} else if rp.ParentCat == v.ParentCat {
+			//item.Type="A"
+			//item:=recommendation.Item(*v)
+			bsm[v.ProductID] = v
+		}
+	}
+	for pid, v := range btm {
+		//item:=recommendation.Item(*v)
+		_, ok := bsm[pid]
+		if !ok {
+			if rp.ParentCat == v.ParentCat {
+				//item.Type=recommendation.REC_ITEM_TYPE_BOUGHTTOGETHER
+				bsm[v.ProductID] = v
+			}
+		}
+	}
+	for _, i := range bsm {
+		rp.BestSimilar = append(rp.BestSimilar, i)
+	}
+	//sort.Sort(rp.BestSimilar)
+	rp.BoughtTogetherItems = rp.BoughtTogetherItems.TopN(param)
+	rp.AlsoViewedItems = rp.AlsoViewedItems.TopN(param)
+	rp.BestSimilar = rp.BestSimilar.TopN(param)
+	rp.SimilarItems = rp.SimilarItems.TopN(param)
+	//rp.SalesByRegion=rp.SalesByRegion.TopN(param.Limit)
 
 }
 
@@ -256,58 +234,13 @@ type DynamoDbHandler struct {
 
 func (dhandler *DynamoDbHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	param := GetSearchParams(r, "")
-	productStr := GetItemFromDynamoDb(dhandler.svc, param.ProductId)
-	glog.V(5).Infof("retrieved from dynamodb: %s\n", productStr)
-	var rp Product
-	error := json.Unmarshal([]byte(productStr), &rp)
-	if error != nil {
-		glog.Errorf("failed to unmarshal json %s %s\n", productStr, error.Error())
+
+	rp, err := GetProdRec(dhandler.svc, param.ProductId)
+
+	if err != nil {
+		glog.Errorf("failed to get product recommendation [%s] %v\n", param.ProductId, err)
 	} else {
-		rp.RemoveSelf()
-		var customer *customer.Customer
-		if param.Customer != "" {
-			customer = GetCustomerFromDynamoDb(dhandler.svc, param.Customer)
-		}
-
-		rp.BoughtTogetherItems = rp.BoughtTogetherItems.TopN(int64(param.Limit))
-		rp.AlsoViewedItems = rp.AlsoViewedItems.TopN(int64(param.Limit))
-		prodIds := make(map[string]bool)
-		for _, v := range rp.AlsoViewedItems {
-			prodIds[v.ProductID] = true
-			//prodIds = append(prodIds, v.ProductID)
-		}
-		for _, v := range rp.BoughtTogetherItems {
-			prodIds[v.ProductID] = true
-		}
-		prodIds[rp.ProductID]=true
-		prods := BatchGetProducts(dhandler.svc, prodIds)
-		for _, v := range rp.AlsoViewedItems {
-			p, ok := prods[v.ProductID]
-			if ok {
-				glog.V(5).Infof("found [%s]=[%s] \n", p.ProductId, p.ImageUrl)
-				v.ProductName = p.ProductName
-				//v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
-				if customer!=nil{
-					v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
-				}else{
-					v.ImageUrl=p.ImageUrl
-				}
-			}
-		}
-		for _, v := range rp.BoughtTogetherItems {
-			p, ok := prods[v.ProductID]
-			if ok {
-				glog.V(5).Infof("found [%s]=[%s] \n", p.ProductId, p.ImageUrl)
-				v.ProductName = p.ProductName
-				if customer!=nil{
-					v.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
-				}else{
-					v.ImageUrl=p.ImageUrl
-				}
-				//v.ImageUrl = *p.GetPreferredColor(customer.BrandPrefs)
-			}
-		}
-
+		MakeRecommendation(rp, dhandler.svc, &param)
 		if param.PrettyPrint {
 			jp, _ := json.MarshalIndent(rp, "", "    ")
 			w.Header().Set(HTTP_HEADER_CONTENT_TYPE, HTTP_HEADER_VALUE_JSON)
@@ -316,13 +249,13 @@ func (dhandler *DynamoDbHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 			json.NewEncoder(w).Encode(rp)
 		}
 		//
-		glog.V(5).Infof("served %s %+v", r.URL.Path, rp)
+		glog.V(5).Infof("served %s boughtTogether[%d]/alsoViewed[%d]\n", r.URL.Path, len(rp.BoughtTogetherItems), len(rp.AlsoViewedItems))
 		glog.V(2).Infof("served %s", r.URL.Path)
 	}
 
 }
 
-func filterResult(prod Product, limit int) Product {
+func filterResult(prod recommendation.Product, limit int) recommendation.Product {
 	if len(prod.BoughtTogetherItems) > 0 {
 		min := math.Min(float64(limit), (float64(len(prod.BoughtTogetherItems))))
 		filtered := prod.BoughtTogetherItems[0:int(min)]
@@ -342,13 +275,13 @@ func filterRecommendation(items SortableItems, limit int) SortableItems {
 
 //get the productId from the url path, for instance /recommendation/prod123 will return prod123
 // /recommendation/prod123/us_mid-west will return prod123,us_mid-west
-func GetSearchParams(r *http.Request, pathBound string) SearchParam {
-	result := SearchParam{Limit: 10}
+func GetSearchParams(r *http.Request, pathBound string) recommendation.SearchParam {
+	result := recommendation.SearchParam{Limit: 10}
 	if strings.HasPrefix(r.URL.Path, pathBound) {
 		//params := r.URL.Path[len(pathBound):]
 		limitStr := r.URL.Query().Get("limit")
 		if limitStr != "" {
-			limit, error := strconv.ParseInt(limitStr, 10, 64)
+			limit, error := strconv.ParseInt(limitStr, 0, 64)
 			if error == nil {
 				result.Limit = int(limit)
 			}
@@ -381,8 +314,8 @@ func GetSearchParams(r *http.Request, pathBound string) SearchParam {
 
 //get the RelatedProducts from the data directory. the data file name following the pattern of "part([\d]+)"
 
-func GetRelatedProducts(dataDir string) RelatedProducts {
-	results := RelatedProducts{Relates: make(map[string]Product)}
+func GetRelatedProducts(dataDir string) recommendation.RelatedProducts {
+	results := recommendation.RelatedProducts{Relates: make(map[string]*recommendation.Product)}
 	fileInfos, error := ioutil.ReadDir(dataDir)
 	if error != nil {
 		glog.Fatalf("failed to read the data directory %s \n", dataDir)
@@ -405,12 +338,12 @@ func GetRelatedProducts(dataDir string) RelatedProducts {
 					continue
 				}
 				jsonStr := part[start:end]
-				var rp Product
+				var rp recommendation.Product
 				error := json.Unmarshal([]byte(jsonStr), &rp)
 				if error != nil {
 					glog.Errorf("failed to unmarshal json %s %s\n", jsonStr, error.Error())
 				} else {
-					results.Relates[rp.ProductID] = rp
+					results.Relates[rp.ProductID] = &rp
 				}
 			}
 		}
@@ -418,29 +351,19 @@ func GetRelatedProducts(dataDir string) RelatedProducts {
 	return results
 }
 
-func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) RelatedProducts {
-	results := RelatedProducts{Relates: make(map[string]Product)}
+func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) recommendation.RelatedProducts {
+	results := recommendation.RelatedProducts{Relates: make(map[string]*recommendation.Product)}
 	bucket, keypattern := parseS3Params(dataDir)
 	params := &s3.ListObjectsInput{
 		Bucket: aws.String("ecomm-order-items"), // Required
-		//Delimiter:    aws.String("Delimiter"),
-		//EncodingType: aws.String("EncodingType"),
-		//Marker:       aws.String("Marker"),
-		//MaxKeys:      aws.Int64(1),
-		//Prefix:       aws.String("Prefix"),
 	}
 	resp, err := svc.ListObjects(params)
 
 	if err != nil {
-		// Print the error, cast err to awserr.Error to get the Code and
-		// Message from an error.
-
 		glog.Errorf("%s, %s \n", err.(awserr.Error).Code(), err.(awserr.Error).Error())
 
 	}
 
-	// Pretty-print the response data.
-	//fmt.Println(resp)
 	for _, obj := range resp.Contents {
 		glog.V(2).Infof("s3 object: %s. Keypattern:%s", *obj.Key, keypattern)
 		if strings.HasPrefix(*obj.Key, keypattern[1:]+"/part-") {
@@ -454,7 +377,7 @@ func GetRelatedProductsFromS3(svc *s3.S3, dataDir string) RelatedProducts {
 }
 
 //populate relatedProducts by parsing out the strContent which should the content from part-00000[\d] files
-func populateRelatedProducts(relatedProducts *RelatedProducts, strContent string) {
+func populateRelatedProducts(relatedProducts *recommendation.RelatedProducts, strContent string) {
 	parts := strings.Split(strContent, "\n")
 	glog.V(2).Infof("number of results: %d", len(parts))
 	for _, part := range parts {
@@ -466,19 +389,19 @@ func populateRelatedProducts(relatedProducts *RelatedProducts, strContent string
 		}
 		jsonStr := part[start:end]
 
-		var rp Product
+		var rp recommendation.Product
 		error := json.Unmarshal([]byte(jsonStr), &rp)
 		if error != nil {
 			glog.Errorf("failed to unmarshal json %s %s\n", jsonStr, error.Error())
 		} else {
-			relatedProducts.Relates[rp.ProductID] = rp
+			relatedProducts.Relates[rp.ProductID] = &rp
 		}
 	}
 
 }
 
-func populateRelatedProductsParallel(strContent string) RelatedProducts {
-	var result = RelatedProducts{Relates: make(map[string]Product)}
+func populateRelatedProductsParallel(strContent string) recommendation.RelatedProducts {
+	var result = recommendation.RelatedProducts{Relates: make(map[string]*recommendation.Product)}
 	parts := strings.Split(strContent, "\n")
 	glog.V(2).Infof("number of results: %d", len(parts))
 	for _, part := range parts {
@@ -490,12 +413,12 @@ func populateRelatedProductsParallel(strContent string) RelatedProducts {
 		}
 		jsonStr := part[start:end]
 
-		var rp Product
+		var rp recommendation.Product
 		error := json.Unmarshal([]byte(jsonStr), &rp)
 		if error != nil {
 			glog.Errorf("failed to unmarshal json %s %s\n", jsonStr, error.Error())
 		} else {
-			result.Relates[rp.ProductID] = rp
+			result.Relates[rp.ProductID] = &rp
 		}
 	}
 	return result
@@ -541,6 +464,80 @@ func parseS3Params(in string) (string, string) {
 	return "", ""
 }
 
+func GetProdRec(svc *dynamodb.DynamoDB, productId string) (*recommendation.Product, error) {
+	rp := &recommendation.Product{ProductID: productId}
+	glog.V(2).Infof("productId is %s\n", productId)
+	params := &dynamodb.GetItemInput{
+		Key: map[string]*dynamodb.AttributeValue{ // Required
+			"productId": { // Required
+				S: aws.String(productId),
+			},
+			// More values...
+		},
+		TableName: aws.String("ProductRecommendation"), // Required
+		AttributesToGet: []*string{
+			aws.String("avItems"),
+			aws.String("btItems"),
+			// More values...
+		},
+		ConsistentRead: aws.Bool(true),
+	}
+	resp, err := svc.GetItem(params)
+
+	if err != nil {
+		glog.Errorln(err.Error())
+		return nil, err
+	}
+	avItems, ok := resp.Item["avItems"]
+	if ok {
+		for _, i := range avItems.M {
+			avi := recommendation.Item{
+				Type:       recommendation.REC_ITEM_TYPE_ALSOVIEWED,
+				ProductID:  *i.M["ProductId"].S,
+				TotalScore: convertScore(*i.M["TotalScore"].N),
+				//ScoresByRegion:convertToScoreByRegion(i.M["ScoreByRegion"].L),
+			}
+			v, ok := i.M["ScoreByRegion"]
+			if ok {
+				avi.ScoresByRegion = convertToScoreByRegion(v.L)
+			}
+			rp.AlsoViewedItems = append(rp.AlsoViewedItems, &avi)
+		}
+	}
+	btItems, ok := resp.Item["btItems"]
+	if ok {
+		for _, i := range btItems.M {
+			bt := recommendation.Item{
+				Type:           recommendation.REC_ITEM_TYPE_BOUGHTTOGETHER,
+				ProductID:      *i.M["ProductId"].S,
+				TotalScore:     convertScore(*i.M["TotalScore"].N),
+				ScoresByRegion: convertToScoreByRegion(i.M["ScoreByRegion"].L),
+			}
+			rp.BoughtTogetherItems = append(rp.BoughtTogetherItems, &bt)
+		}
+	}
+	return rp, nil
+}
+func convertScore(s string) int {
+	r, er := strconv.ParseInt(s, 0, 64)
+	if er == nil {
+		return int(r)
+	} else {
+		glog.V(2).Infof("failed to parseInt %s\n", er.Error())
+		return 0
+	}
+}
+func convertToScoreByRegion(l []*dynamodb.AttributeValue) catalog.RegionScores {
+	result := &catalog.RegionScores{}
+	for _, v := range l {
+		s := &catalog.RegionScore{
+			Region: v.M["Region"].S,
+			Score:  convertScore(*v.M["Score"].N),
+		}
+		*result = append(*result, s)
+	}
+	return *result
+}
 func GetItemFromDynamoDb(svc *dynamodb.DynamoDB, productId string) string {
 	glog.V(2).Infof("productId is %s\n", productId)
 	params := &dynamodb.GetItemInput{
@@ -556,20 +553,10 @@ func GetItemFromDynamoDb(svc *dynamodb.DynamoDB, productId string) string {
 			// More values...
 		},
 		ConsistentRead: aws.Bool(true),
-		/*
-			ExpressionAttributeNames: map[string]*string{
-				"Key": aws.String("AttributeName"), // Required
-				// More values...
-			},
-			ProjectionExpression:   aws.String("ProjectionExpression"),
-			ReturnConsumedCapacity: aws.String("ReturnConsumedCapacity"),
-		*/
 	}
 	resp, err := svc.GetItem(params)
 
 	if err != nil {
-		// Print the error, cast err to awserr.Error to get the Code and
-		// Message from an error.
 		glog.Errorln(err.Error())
 		return "failed to query DynamoDb"
 	}
@@ -618,18 +605,18 @@ func GetCustomerFromDynamoDb(svc *dynamodb.DynamoDB, customerId string) *custome
 
 type RawHandler struct {
 	pathBound string
-	data      *RelatedProducts
+	data      *recommendation.RelatedProducts
 }
 
 func (relates *RawHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	glog.V(2).Infof("serving %s", r.URL.Path)
 	param := GetSearchParams(r, relates.pathBound)
-	var prod Product
+	var prod recommendation.Product
 	relatesProducts := *relates.data
 	if val, ok := relatesProducts.Relates[param.ProductId]; ok {
-		prod = val
+		prod = *val
 	} else {
-		prod = Product{
+		prod = recommendation.Product{
 			ProductID: param.ProductId,
 			//SortedRelates:[]RelatedProduct{},
 			//BoughtTogetherItems: []BoughtTogetherItem{},
@@ -647,18 +634,18 @@ func (relates *RawHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 type GeoHandler struct {
 	pathBound string
-	data      *RelatedProducts
+	data      *recommendation.RelatedProducts
 }
 
 func (relates *GeoHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	glog.V(2).Infof("serving %s", r.URL.Path)
 	param := GetSearchParams(r, relates.pathBound)
-	var prod Product
+	var prod recommendation.Product
 	relatesProducts := *relates.data
 	if val, ok := relatesProducts.Relates[param.ProductId]; ok {
-		prod = val
+		prod = *val
 	} else {
-		prod = Product{
+		prod = recommendation.Product{
 			ProductID: param.ProductId,
 			//SortedRelates:[]RelatedProduct{},
 			//BoughtTogetherItems: []BoughtTogetherItem{},
@@ -698,12 +685,12 @@ func serveFromDynamoDb() {
 	mux := http.NewServeMux()
 	mux.Handle("/recommendation/", handler)
 	mux.Handle("/recweb/", templateHandler)
-	glog.Infof("data source is pointing to dynamo db. servic ready on port 8080")
+	glog.Infof("data source is pointing to dynamo db. service ready on port 8080")
 	glog.Fatal(http.ListenAndServe(":8080", mux))
 }
 
 func serveFromS3(s3Location string) {
-	var relatedProducts RelatedProducts = RelatedProducts{Relates: make(map[string]Product)}
+	var relatedProducts recommendation.RelatedProducts = recommendation.RelatedProducts{Relates: make(map[string]*recommendation.Product)}
 
 	if strings.HasPrefix(s3Location, "s3://") {
 		svc := s3.New(session.New(), &aws.Config{Region: aws.String("us-east-1")})
@@ -757,7 +744,7 @@ func getUrlPathValues(path string) map[string]string {
 	return result
 }
 
-func parallelLoadS3(relates *RelatedProducts, svc *s3.S3, dataDir string) {
+func parallelLoadS3(relates *recommendation.RelatedProducts, svc *s3.S3, dataDir string) {
 	bucket, keypattern := parseS3Params(dataDir)
 	params := &s3.ListObjectsInput{
 		Bucket: aws.String("ecomm-order-items"), // Required
@@ -769,7 +756,7 @@ func parallelLoadS3(relates *RelatedProducts, svc *s3.S3, dataDir string) {
 	}
 
 	workQueue := make(chan Payload, 25)
-	statusQueue := make(chan RelatedProducts, 25)
+	statusQueue := make(chan recommendation.RelatedProducts, 25)
 
 	processWorkQueue(workQueue, statusQueue)
 	var mutex = &sync.Mutex{}
@@ -797,7 +784,7 @@ func parallelLoadS3(relates *RelatedProducts, svc *s3.S3, dataDir string) {
 
 }
 
-func processWorkQueue(q chan Payload, s chan RelatedProducts) {
+func processWorkQueue(q chan Payload, s chan recommendation.RelatedProducts) {
 	for i := 0; i < 16; i++ {
 		go func() {
 			for payload := range q {
@@ -811,7 +798,7 @@ func processWorkQueue(q chan Payload, s chan RelatedProducts) {
 }
 
 type Payload struct {
-	RelatedItems *RelatedProducts
+	RelatedItems *recommendation.RelatedProducts
 	SVC          *s3.S3
 	Bucket       string
 	Key          string
@@ -839,6 +826,10 @@ func BatchGetProducts(svc *dynamodb.DynamoDB, prodIds map[string]bool) map[strin
 					aws.String("productId"),
 					aws.String("ImageUrls"),
 					aws.String("ParentCategory"),
+					aws.String("NumOfTxn"),
+					aws.String("SimilarItems"),
+					aws.String("AvailableSkus"),
+					aws.String("SalesByRegion"),
 					// More values...
 				},
 				ConsistentRead: aws.Bool(true),
@@ -873,9 +864,40 @@ func BatchGetProducts(svc *dynamodb.DynamoDB, prodIds map[string]bool) map[strin
 					p.ImageUrls[c] = v.S
 				}
 			case "ParentCategory":
-				p.ParentCat=*v.S
+				p.ParentCat = *v.S
+			case "NumOfTxn":
+				p.NumOfPurchase = convertScore(*v.N)
+			case "AvailableSkus":
+				if len(v.SS) > 0 {
+					p.Availability = true
+				} else {
+					p.Availability = false
+				}
+			case "SimilarItems":
+				for _, i := range v.M {
+					for k, v := range i.M {
+						if k == "ProductId" {
+							p.SimilarItems = append(p.SimilarItems, v.S)
+						}
+					}
+				}
+			case "SalesByRegion":
+				for _, i := range v.L {
+					rs := &catalog.RegionScore{}
+					for k, v := range i.M {
+						if k == "Region" {
+							rs.Region = v.S
+						} else if k == "Score" {
+							rs.Score = convertScore(*v.N)
+						}
+					}
+					p.SalesByRegion = append(p.SalesByRegion, rs)
+
+				}
+
 			}
 		}
+
 		result[p.ProductId] = p
 	}
 	return result

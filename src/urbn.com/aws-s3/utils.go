@@ -20,6 +20,7 @@ func GetObjectAsString(svc *s3.S3, bucket string, key string) string {
 		// Print the error, cast err to awserr.Error to get the Code and
 		// Message from an error.
 		glog.Fatal(err.Error())
+		return ""
 	}
 
 	size := int(*resp.ContentLength)

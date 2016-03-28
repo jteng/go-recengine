@@ -16,7 +16,7 @@
     <tr>
         {{range .BoughtTogetherItems}}
         <td style="font-size: smaller;width: auto"><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}">
-            <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}">
+            <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}"  title="score={{.TotalScore}}">
             </a>
             <br>{{.ProductName}}
         </td>
@@ -29,7 +29,7 @@
     <tr>
         {{range .AlsoViewedItems}}
         <td style="font-size: smaller;width: auto"><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}">
-            <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}">
+            <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}" title="score={{.TotalScore}}">
         </a>
             <br>{{.ProductName}}
         </td>
@@ -37,6 +37,32 @@
     </tr>
 </table>
 </div>
+    <div id="bt" style="margin-top: 10px;" align="left"><p style="font-size: larger;font-weight: bold">U Pick:</p>
+        <table width="800">
+            <tr>
+                {{range .BestSimilar}}
+                <td style="font-size: smaller;width: auto"><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}">
+                    <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}" title="score={{.TotalScore}}">
+                </a>
+                    <br>{{.ProductName}}
+                </td>
+                {{end}}
+            </tr>
+        </table>
+    </div>
+    <div id="similar" style="margin-top: 10px;" align="left"><p style="font-size: larger;font-weight: bold">Best Sellers:</p>
+        <table width="800">
+            <tr>
+                {{range .SimilarItems}}
+                <td style="font-size: smaller;width: auto"><a href="http://www.urbanoutfitters.com/urban/catalog/productdetail.jsp?id={{.ProductID}}">
+                    <img src="{{.ImageUrl}}" alt="{{.ImageUrl}}" title="score={{.TotalScore}}">
+                </a>
+                    <br>{{.ProductName}}
+                </td>
+                {{end}}
+            </tr>
+        </table>
+    </div>
 </div>
 </body>
 </html>
