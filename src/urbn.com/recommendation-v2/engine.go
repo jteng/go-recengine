@@ -235,12 +235,16 @@ func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, para
 
 	for _, i := range bsm {
 		if i.Availability{
-			rp.PickedForU = append(rp.PickedForU, i)
+			if _,ok:=rp.PickedForU.Search(*i);!ok {
+				rp.PickedForU = append(rp.PickedForU, i)
+			}
 		}
 	}
 	if len(rp.PickedForU)<param.Limit{
 		for i:=0;len(rp.PickedForU)<param.Limit&&i<len(rp.BestSellers);i++{
-			rp.PickedForU=append(rp.PickedForU,rp.BestSellers[i])
+			if _,ok:=rp.PickedForU.Search(*rp.BestSellers[i]);!ok {
+				rp.PickedForU=append(rp.PickedForU,rp.BestSellers[i])
+			}
 		}
 	}
 	//sort.Sort(rp.BestSimilar)
