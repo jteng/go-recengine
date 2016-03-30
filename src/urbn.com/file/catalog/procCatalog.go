@@ -51,13 +51,21 @@ func loadCatalog(svc *s3.S3, file string, s3 bool) catalog.Feed {
 	}
 	for idx, sku := range result.Skus.Items {
 		if sku.Price == nil {
-			sku.Price = make(map[string]float64)
+			sku.Price = make(map[string]*catalog.Price)
 		}
-		if sku.CADListPrice > 0 {
-			sku.Price[catalog.CURRENCY_CODE_CAD] = sku.CADListPrice
+		if sku.CADListPrice > 0 && sku.CADSalePrice>0{
+			sku.Price[catalog.CURRENCY_CODE_CAD] = &catalog.Price{
+				CurrencyCode:catalog.CURRENCY_CODE_CAD,
+				ListPrice:sku.CADListPrice,
+				SalePrice:sku.CADSalePrice,
+			}
 		}
-		if sku.USDListPrice > 0 {
-			sku.Price[catalog.CURRENCY_CODE_USD] = sku.USDListPrice
+		if sku.USDListPrice > 0 &&sku.USDSalePrice>0{
+			sku.Price[catalog.CURRENCY_CODE_USD] = &catalog.Price{
+				CurrencyCode:catalog.CURRENCY_CODE_USD,
+				ListPrice:sku.USDListPrice,
+				SalePrice:sku.USDSalePrice,
+			}
 		}
 		result.Skus.Items[idx] = sku
 	}
@@ -372,6 +380,9 @@ func convertSortedProductsToDynamoValue(prc map[int]*catalog.Product) map[string
 				},
 				"Price": { // Required
 					S: aws.String(prcRge),
+				},
+				"NOP": { // Required
+					N: aws.String(strconv.FormatInt(int64(p.NumOfPurchase),10)),
 				},
 
 			},

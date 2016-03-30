@@ -65,6 +65,7 @@ type Product struct {
 	ImageUrls     map[string]*string
 	NumOfPurchase int
 	SalesByRegion RegionScores
+	PriceRange map[string]*Price
 	SimilarItems  []*string
 	Availability  bool
 }
@@ -123,7 +124,14 @@ func (p RegionScores) TopN(n int) []*RegionScore {
 	return p[:(int64(t))]
 
 }
-
+//pass c -- currency code
+func (p *Product) IsOnSale(c string)bool{
+	v,ok:=p.PriceRange[c]
+	if ok{
+		return v.ListPrice>v.SalePrice
+	}
+	return false
+}
 func (p Product) GetPreferredColor(cs []*string) *string {
 	for _, c := range cs {
 		v, ok := p.ImageUrls[*c]
@@ -146,11 +154,11 @@ func (p Product) GetPriceRange(currencyCode string) (float64, float64) {
 		if s.Availability != OutOfStock {
 			v, ok := s.Price[currencyCode]
 			if ok {
-				if low == 0 || low > v {
-					low = v
+				if low == 0 || low > v.SalePrice {
+					low = v.SalePrice
 				}
-				if high == 0 || high < v {
-					high = v
+				if high == 0 || high < v.ListPrice {
+					high = v.ListPrice
 				}
 			}
 		}
@@ -165,16 +173,16 @@ func (p Product) GetPrice() map[string]Price {
 			for c, prc := range s.Price {
 				v, ok := result[c]
 				if ok {
-					if v.SalePrice > prc {
-						v.SalePrice = prc
-					} else if v.ListPrice < prc {
-						v.ListPrice = prc
+					if v.SalePrice > prc.SalePrice {
+						v.SalePrice = prc.SalePrice
+					} else if v.ListPrice < prc.ListPrice {
+						v.ListPrice = prc.ListPrice
 					}
 					result[c] = v
 				} else {
 					result[c] = Price{
-						ListPrice:    prc,
-						SalePrice:    prc,
+						ListPrice:    prc.ListPrice,
+						SalePrice:    prc.SalePrice,
 						CurrencyCode: c,
 					}
 				}
@@ -300,9 +308,11 @@ type Sku struct {
 	ParentProd         string             `xml:"ParentProductExternalId"`
 	ThumbnailImageUrls ThumbNailImageUrls `xml:"ThumbNailImageUrlsBySku"`
 	USDListPrice       float64            `xml:"USDListPrice"`
+	USDSalePrice       float64            `xml:"USDSalePrice"`
 	CADListPrice       float64            `xml:"CADListPrice"`
+	CADSalePrice	   float64 		`xml:"CADSalePrice"`
 	CatImageUrl        string             `xml:"ImageURL-CategoryPage"`
-	Price              map[string]float64
+	Price              map[string]*Price
 	Availability       Availability
 }
 type ThumbNailImageUrls struct {

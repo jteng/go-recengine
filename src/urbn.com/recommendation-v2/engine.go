@@ -93,6 +93,8 @@ func (dhandler *TemplateDynHandler) ServeHTTP(w http.ResponseWriter, r *http.Req
 		glog.Errorf("failed to get product recommendation [%s] %v\n", param.ProductId, err)
 	} else {
 		MakeRecommendation(rp, dhandler.svc, &param)
+		//parse template each time is NOT a good idea
+		//should we cache it?
 		t, _ := template.ParseFiles("rectemplate.html")
 
 		t.Execute(w, rp)
@@ -121,11 +123,11 @@ func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, para
 	for _, v := range rp.BoughtTogetherItems {
 		prodIds[v.ProductID] = true
 	}
-
+	//get the product detail info from product catalog
 	prods := BatchGetProducts(svc, prodIds)
 	p, ok := prods[rp.ProductID]
+	//populate the current product
 	if ok {
-
 		if customer != nil {
 			rp.ImageUrl = *p.GetPreferredColor(customer.ColorPrefs)
 		} else {
@@ -139,6 +141,8 @@ func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, para
 		for _, v := range p.SimilarItems {
 			sIds[*v] = true
 		}
+		//get the detail info for each similar products of the current product
+		//may consider have the similar products to ProductRecommendation doc
 		simprods := BatchGetProducts(svc, sIds)
 		for _, sp := range simprods {
 			if sp.Availability {
@@ -150,7 +154,9 @@ func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, para
 				si.ParentCat = sp.ParentCat
 				si.ScoresByRegion = sp.SalesByRegion
 				si.Availability = sp.Availability
-				rp.SimilarItems = append(rp.SimilarItems, &si)
+				si.OnSale=sp.IsOnSale(param.Currency)
+				glog.V(4).Infof("Item[%s] is on sale %v %v in %s \n",si.ProductID,si.OnSale,sp.IsOnSale(param.Currency),param.Currency)
+				rp.BestSellers = append(rp.BestSellers, &si)
 			}
 		}
 	}
@@ -193,16 +199,23 @@ func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, para
 	bsm := make(map[string]*recommendation.Item)
 	for pid, v := range avm {
 		//item:=recommendation.Item(*v)
-		_, ok := btm[pid]
+		bi, ok := btm[pid]
 		glog.V(3).Infof("parent cat for %s is %s. item[%s].parentCat=[%s]\n", rp.ProductID, rp.ParentCat, v.ProductID, v.ParentCat)
 		if ok {
+			if bi.TotalScore<=v.TotalScore{
+				v.TotalScore =v.TotalScore*2
+			}else{
+				v.TotalScore=bi.TotalScore*2
+			}
 			v.Type = recommendation.REC_ITEM_TYPE_PICKED
-			v.TotalScore = v.TotalScore * 2
+			glog.V(3).Infof("increase weight to %d for product[%s] as it is also in bt list\n",v.TotalScore,v.ProductID)
 			//item:=recommendation.Item(*v)
 			bsm[v.ProductID] = v
 		} else if rp.ParentCat == v.ParentCat {
 			//item.Type="A"
 			//item:=recommendation.Item(*v)
+			bsm[v.ProductID] = v
+		} else if v.IsSignificant(){
 			bsm[v.ProductID] = v
 		}
 	}
@@ -213,17 +226,30 @@ func MakeRecommendation(rp *recommendation.Product, svc *dynamodb.DynamoDB, para
 			if rp.ParentCat == v.ParentCat {
 				//item.Type=recommendation.REC_ITEM_TYPE_BOUGHTTOGETHER
 				bsm[v.ProductID] = v
+			}else if v.IsSignificant(){
+				bsm[v.ProductID] = v
 			}
 		}
 	}
+	rp.BestSellers = rp.BestSellers.TopN(param)
+
 	for _, i := range bsm {
-		rp.BestSimilar = append(rp.BestSimilar, i)
+		if i.Availability{
+			rp.PickedForU = append(rp.PickedForU, i)
+		}
+	}
+	if len(rp.PickedForU)<param.Limit{
+		for i:=0;len(rp.PickedForU)<param.Limit&&i<len(rp.BestSellers);i++{
+			rp.PickedForU=append(rp.PickedForU,rp.BestSellers[i])
+		}
 	}
 	//sort.Sort(rp.BestSimilar)
 	rp.BoughtTogetherItems = rp.BoughtTogetherItems.TopN(param)
+	rp.BoughtTogetherItems.RemoveDups()
 	rp.AlsoViewedItems = rp.AlsoViewedItems.TopN(param)
-	rp.BestSimilar = rp.BestSimilar.TopN(param)
-	rp.SimilarItems = rp.SimilarItems.TopN(param)
+	rp.AlsoViewedItems.RemoveDups()
+	rp.PickedForU = rp.PickedForU.TopN(param)
+
 	//rp.SalesByRegion=rp.SalesByRegion.TopN(param.Limit)
 
 }
@@ -294,6 +320,10 @@ func GetSearchParams(r *http.Request, pathBound string) recommendation.SearchPar
 
 		result.Customer = r.URL.Query().Get("customer")
 		result.Sort = r.URL.Query().Get("sort")
+		result.Currency=r.URL.Query().Get("currency")
+		if result.Currency==""{
+			result.Currency=catalog.CURRENCY_CODE_USD
+		}
 
 		pp := r.URL.Query().Get("pretty")
 
@@ -830,6 +860,7 @@ func BatchGetProducts(svc *dynamodb.DynamoDB, prodIds map[string]bool) map[strin
 					aws.String("SimilarItems"),
 					aws.String("AvailableSkus"),
 					aws.String("SalesByRegion"),
+					aws.String("Price"),
 					// More values...
 				},
 				ConsistentRead: aws.Bool(true),
@@ -850,10 +881,11 @@ func BatchGetProducts(svc *dynamodb.DynamoDB, prodIds map[string]bool) map[strin
 		p := &catalog.Product{
 			ImageUrls: make(map[string]*string),
 		}
+		p.ProductId=*i["productId"].S
 		for a, v := range i {
 			switch a {
-			case "productId":
-				p.ProductId = *v.S
+			//case "productId":
+			//	p.ProductId = *v.S
 			case "ProductName":
 				p.ProductName = *v.S
 			case "LeadColorImageUrl":
@@ -865,6 +897,24 @@ func BatchGetProducts(svc *dynamodb.DynamoDB, prodIds map[string]bool) map[strin
 				}
 			case "ParentCategory":
 				p.ParentCat = *v.S
+			case "Price":
+				if p.PriceRange==nil{
+					p.PriceRange=make(map[string]*catalog.Price)
+				}
+				var err error
+				for c,price:=range v.M{
+					mp:=catalog.Price{CurrencyCode:c}
+					mp.ListPrice,err=strconv.ParseFloat(*price.M["ListPrice"].N,64)
+					if err!=nil{
+						glog.V(2).Infof("failed to get produrct[%s] list price %s\n",p.ProductId,err.Error())
+					}
+					mp.SalePrice,err=strconv.ParseFloat(*price.M["SalePrice"].N,64)
+					if err!=nil{
+						glog.V(2).Infof("failed to get produrct[%s] sale price %s\n",p.ProductId,err.Error())
+					}
+					p.PriceRange[c]=&mp
+					glog.V(4).Infof("product[%s] is on sale %v in %s \n",p.ProductId,p.IsOnSale(c),c)
+				}
 			case "NumOfTxn":
 				p.NumOfPurchase = convertScore(*v.N)
 			case "AvailableSkus":

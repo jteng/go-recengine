@@ -18,6 +18,7 @@ type SearchParam struct {
 	Limit       int
 	Sort        string
 	Customer    string
+	Currency string
 	PrettyPrint bool
 }
 type Product struct {
@@ -27,8 +28,8 @@ type Product struct {
 	NumOfPurchase       int   `json:"numOfPurchase"`
 	BoughtTogetherItems Items `json:"boughtTogetherItems"`
 	AlsoViewedItems     Items `json:"alsoViewedItems"`
-	BestSimilar         Items
-	SimilarItems        Items
+	PickedForU          Items
+	BestSellers         Items
 	SalesByRegion       catalog.RegionScores `json:"salesByRegion"`
 }
 
@@ -78,13 +79,35 @@ func (p Items) Less(i, j int) bool {
 	si := p[i].TotalScore
 	sj := p[j].TotalScore
 	if p[i].Availability == p[j].Availability {
-		return si > sj
+		if p[i].OnSale==p[j].OnSale{
+			return si > sj
+		}else if p[i].OnSale{
+			return false
+		}else{
+			return true
+		}
+
 	} else if p[i].Availability {
 		return true
 	} else {
 		return false
 	}
 }
+
+func (p Items) RemoveDups(){
+	m:=make(map[string]int)
+	for k,v:=range p{
+		if _,ok:=m[v.ProductID]; !ok {
+			m[v.ProductID]=k
+		}else{
+			if len(p)>k+1{
+				p=append(p[:k],p[k+1:]...)
+				glog.V(2).Infof("removed dups %s ...\n",v.ProductID+"|"+v.ProductName)
+			}
+		}
+	}
+}
+
 func (p Items) TopN(f interface{}) []*Item {
 
 	var pm *SearchParam
@@ -153,8 +176,23 @@ type Item struct {
 	ImageUrl       string `json:"imageUrl"`
 	TotalScore     int    `json:"totalScore"`
 	ParentCat      string
+	OnSale bool
 	Availability   bool
 	ScoresByRegion catalog.RegionScores `json:"scoreByRegion"`
+}
+
+func (i *Item) IsSignificant() bool{
+	switch i.Type {
+	case REC_ITEM_TYPE_BOUGHTTOGETHER:
+		if i.TotalScore>=30{
+			return true
+		}
+	case REC_ITEM_TYPE_ALSOVIEWED:
+		if i.TotalScore>=10{
+			return true
+		}
+	}
+	return false
 }
 
 func (bi *Item) merge(n Item) {
