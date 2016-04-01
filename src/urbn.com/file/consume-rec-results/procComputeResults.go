@@ -151,7 +151,7 @@ func bulkWriteProductRecs(svc *dynamodb.DynamoDB, rps recommendation.RelatedProd
 			count = 0
 			batch = batch[:0]
 			params.RequestItems = make(map[string][]*dynamodb.WriteRequest)
-			glog.V(1).Infof("finished product batch %d\n", i/DYNAMO_WRITE_THRESHOLD)
+			glog.V(1).Infof("finished product recommendation batch %d\n", i/DYNAMO_WRITE_THRESHOLD)
 			glog.Flush()
 		}
 	}

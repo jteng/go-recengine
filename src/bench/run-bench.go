@@ -1,13 +1,13 @@
 package main
 
 import (
-	"bench/logme"
-	"bench/httpbench"
+	"bench/slopeone"
 )
 
 func main(){
+	slopeone.Predict()
 	//file.Loadfiles()
-	logme.Logme()
+	//logme.Logme()
 
-	httpbench.Show()
+	//httpbench.Show()
 }

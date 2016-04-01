@@ -13,13 +13,12 @@ import (
 	"github.com/golang/glog"
 	"io"
 	"io/ioutil"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"urbn.com/catalog"
-	"sort"
 )
-
 
 const (
 	DYNAMO_WRITE_THRESHOLD = 25
@@ -53,18 +52,18 @@ func loadCatalog(svc *s3.S3, file string, s3 bool) catalog.Feed {
 		if sku.Price == nil {
 			sku.Price = make(map[string]*catalog.Price)
 		}
-		if sku.CADListPrice > 0 && sku.CADSalePrice>0{
+		if sku.CADListPrice > 0 && sku.CADSalePrice > 0 {
 			sku.Price[catalog.CURRENCY_CODE_CAD] = &catalog.Price{
-				CurrencyCode:catalog.CURRENCY_CODE_CAD,
-				ListPrice:sku.CADListPrice,
-				SalePrice:sku.CADSalePrice,
+				CurrencyCode: catalog.CURRENCY_CODE_CAD,
+				ListPrice:    sku.CADListPrice,
+				SalePrice:    sku.CADSalePrice,
 			}
 		}
-		if sku.USDListPrice > 0 &&sku.USDSalePrice>0{
+		if sku.USDListPrice > 0 && sku.USDSalePrice > 0 {
 			sku.Price[catalog.CURRENCY_CODE_USD] = &catalog.Price{
-				CurrencyCode:catalog.CURRENCY_CODE_USD,
-				ListPrice:sku.USDListPrice,
-				SalePrice:sku.USDSalePrice,
+				CurrencyCode: catalog.CURRENCY_CODE_USD,
+				ListPrice:    sku.USDListPrice,
+				SalePrice:    sku.USDSalePrice,
 			}
 		}
 		result.Skus.Items[idx] = sku
@@ -97,7 +96,7 @@ func loadInventory(svc *s3.S3, file string, s3 bool) map[string]catalog.Availabi
 		bo, _ := strconv.ParseInt(strings.TrimSpace(lps[2]), 0, 64)
 		if stock > 0 {
 			inv = catalog.InStock
-		} else if bo > 0  {
+		} else if bo > 0 {
 			inv = catalog.BackOrdered
 		}
 		result[lps[0]] = inv
@@ -171,7 +170,7 @@ func processFeeds(svc *s3.S3, dataDir string, useS3 bool) {
 
 	dsvc := dynamodb.New(session.New(), &aws.Config{Region: aws.String("us-east-1")})
 	glog.V(1).Infof("setting numOfTxn for each product... \n")
-	setNumTxns(dsvc,&catalog)
+	setNumTxns(dsvc, &catalog)
 	glog.V(1).Infof("done setting numOfTxn for each product... \n")
 	bulkWriteProducts(dsvc, catalog)
 	glog.V(1).Infof("finished update products. \n")
@@ -256,7 +255,7 @@ func setNumTxns(dsvc *dynamodb.DynamoDB, pctlg *catalog.ProductCatalog) {
 	params := &dynamodb.BatchGetItemInput{}
 	var batch []map[string]*dynamodb.AttributeValue
 	count := 0
-	for i := 0; i < len(keys); i++{
+	for i := 0; i < len(keys); i++ {
 		batch = append(batch, keys[i])
 		count = count + 1
 		if count >= DYNAMO_READ_THRESHOLD {
@@ -293,48 +292,48 @@ func handleBatchRead(dsvc *dynamodb.DynamoDB, params *dynamodb.BatchGetItemInput
 		if ok {
 			for _, attrvl := range items {
 				var prodId string
-				var numOfTxn int=0
+				var numOfTxn int = 0
 				var salesByRgn catalog.RegionScores
 				for a, v := range attrvl {
 					if "productId" == a {
-						prodId=*v.S
-						glog.V(4).Infof("read product[%s]\n",prodId)
-					} else if "NumOfTxn"==a {
-						n,err:=strconv.ParseInt(*v.N,0,64)
+						prodId = *v.S
+						glog.V(4).Infof("read product[%s]\n", prodId)
+					} else if "NumOfTxn" == a {
+						n, err := strconv.ParseInt(*v.N, 0, 64)
 						if err == nil {
-							numOfTxn=int(n)
-							glog.V(4).Infof("set num of txn to %d",numOfTxn)
+							numOfTxn = int(n)
+							glog.V(4).Infof("set num of txn to %d", numOfTxn)
 
-						}else{
-							glog.V(2).Infof("failed to read num of txn %s",err.Error())
+						} else {
+							glog.V(2).Infof("failed to read num of txn %s", err.Error())
 						}
 
-					}else if "SalesByRegion"==a{
+					} else if "SalesByRegion" == a {
 
-						for _,rv:=range v.L{
-							rs:=catalog.RegionScore{}
-							rs.Region=rv.M["Region"].S
-							sc,err:=strconv.ParseInt(*rv.M["Score"].N,0,64)
-							if err==nil{
-								rs.Score=int(sc)
-							}else{
-								glog.V(2).Infof("failed to convert to int %s ",err.Error())
+						for _, rv := range v.L {
+							rs := catalog.RegionScore{}
+							rs.Region = rv.M["Region"].S
+							sc, err := strconv.ParseInt(*rv.M["Score"].N, 0, 64)
+							if err == nil {
+								rs.Score = int(sc)
+							} else {
+								glog.V(2).Infof("failed to convert to int %s ", err.Error())
 							}
-							if *rs.Region!=""{
-								salesByRgn=append(salesByRgn,&rs)
-								glog.V(4).Infof("add rs[%s].score[%d] orig score %s \n",*rs.Region,rs.Score,*rv.M["Score"].N)
+							if *rs.Region != "" {
+								salesByRgn = append(salesByRgn, &rs)
+								glog.V(4).Infof("add rs[%s].score[%d] orig score %s \n", *rs.Region, rs.Score, *rv.M["Score"].N)
 							}
 						}
 
 					}
 				}
-				p,ok:=results.Products[prodId]
-				if ok{
-					p.NumOfPurchase=numOfTxn
-					p.SalesByRegion=salesByRgn.TopN(catalog.MAX_SALES_BY_REGION)
-					glog.V(4).Infof("set p[%s].numOfTxn=%d rs=%d\n",p.ProductId,p.NumOfPurchase,len(p.SalesByRegion))
-				}else{
-					glog.V(4).Infof("failed to find  p[%s] \n",prodId)
+				p, ok := results.Products[prodId]
+				if ok {
+					p.NumOfPurchase = numOfTxn
+					p.SalesByRegion = salesByRgn.TopN(catalog.MAX_SALES_BY_REGION)
+					glog.V(4).Infof("set p[%s].numOfTxn=%d rs=%d\n", p.ProductId, p.NumOfPurchase, len(p.SalesByRegion))
+				} else {
+					glog.V(4).Infof("failed to find  p[%s] \n", prodId)
 				}
 			}
 
@@ -372,7 +371,7 @@ func convertPriceToDynamoValue(prc map[string]catalog.Price) map[string]*dynamod
 func convertSortedProductsToDynamoValue(prc map[int]*catalog.Product) map[string]*dynamodb.AttributeValue {
 	result := make(map[string]*dynamodb.AttributeValue)
 	for c, p := range prc {
-		prcRge:=getPriceRange(p)
+		prcRge := getPriceRange(p)
 		result[strconv.FormatInt(int64(c), 10)] = &dynamodb.AttributeValue{
 			M: map[string]*dynamodb.AttributeValue{
 				"ProductId": { // Required
@@ -382,9 +381,8 @@ func convertSortedProductsToDynamoValue(prc map[int]*catalog.Product) map[string
 					S: aws.String(prcRge),
 				},
 				"NOP": { // Required
-					N: aws.String(strconv.FormatInt(int64(p.NumOfPurchase),10)),
+					N: aws.String(strconv.FormatInt(int64(p.NumOfPurchase), 10)),
 				},
-
 			},
 		}
 	}
@@ -392,10 +390,10 @@ func convertSortedProductsToDynamoValue(prc map[int]*catalog.Product) map[string
 }
 
 func getPriceRange(p *catalog.Product) string {
-	l,h:=p.GetPriceRange(catalog.CURRENCY_CODE_USD)
-	ls:=strconv.FormatFloat(l,'f',2,64)
-	hs:=strconv.FormatFloat(h,'f',2,64)
-	return ls+"-"+hs
+	l, h := p.GetPriceRange(catalog.CURRENCY_CODE_USD)
+	ls := strconv.FormatFloat(l, 'f', 2, 64)
+	hs := strconv.FormatFloat(h, 'f', 2, 64)
+	return ls + "-" + hs
 }
 func convertImageUrlsToDynamoValue(urls map[string]string) map[string]*dynamodb.AttributeValue {
 	result := make(map[string]*dynamodb.AttributeValue)
@@ -484,13 +482,12 @@ func convertProductToDynamo(p *catalog.Product) map[string]*dynamodb.AttributeVa
 			SS: aws.StringSlice(p.GetAvailableSizes()),
 		}
 	}
-	nt:=strconv.FormatInt(int64(p.NumOfPurchase),10)
+	nt := strconv.FormatInt(int64(p.NumOfPurchase), 10)
 
-
-	result["NumOfTxn"]=&dynamodb.AttributeValue{
+	result["NumOfTxn"] = &dynamodb.AttributeValue{
 		N: aws.String(nt),
 	}
-	if len(p.SalesByRegion)>0{
+	if len(p.SalesByRegion) > 0 {
 		var rgnsales []*dynamodb.AttributeValue
 		sort.Sort(p.SalesByRegion)
 		for _, r := range p.SalesByRegion {
@@ -507,20 +504,20 @@ func convertProductToDynamo(p *catalog.Product) map[string]*dynamodb.AttributeVa
 			}
 			rgnsales = append(rgnsales, v)
 		}
-		result["SalesByRegion"]=&dynamodb.AttributeValue{
-			L:rgnsales,
+		result["SalesByRegion"] = &dynamodb.AttributeValue{
+			L: rgnsales,
 		}
-		glog.V(4).Infof("add SalesByRegion for P[%s].length of SalesByRegion=%d. orig length=%d \n",p.ProductId,len(rgnsales),len(p.SalesByRegion))
+		glog.V(4).Infof("add SalesByRegion for P[%s].length of SalesByRegion=%d. orig length=%d \n", p.ProductId, len(rgnsales), len(p.SalesByRegion))
 	}
-	if p.IsAvailable() {
-		similarItems := p.GetSimilarProducts()
-		dsi := convertSortedProductsToDynamoValue(similarItems)
-		if len(similarItems) > 0 {
-			result["SimilarItems"] = &dynamodb.AttributeValue{
-				M: dsi,
-			}
+	//if p.IsAvailable() {
+	similarItems := p.GetSimilarProducts()
+	dsi := convertSortedProductsToDynamoValue(similarItems)
+	if len(similarItems) > 0 {
+		result["SimilarItems"] = &dynamodb.AttributeValue{
+			M: dsi,
 		}
 	}
+	//}
 	price := convertPriceToDynamoValue(p.GetPrice())
 	if len(price) > 0 {
 		result["Price"] = &dynamodb.AttributeValue{
@@ -536,7 +533,6 @@ func convertProductToDynamo(p *catalog.Product) map[string]*dynamodb.AttributeVa
 
 	return result
 }
-
 
 func convertCategoryToDynamo(cat *catalog.Category) map[string]*dynamodb.AttributeValue {
 	result := make(map[string]*dynamodb.AttributeValue)
